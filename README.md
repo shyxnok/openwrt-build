@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # OpenWrt — GitHub Actions 自动编译
 
 利用 GitHub Actions 自动编译定制化的 OpenWrt 固件。你只需修改配置文件并推送代码，固件就会在 GitHub 服务器上自动编译。
@@ -189,3 +190,7 @@ echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
 ## 📄 License
 
 MIT License
+=======
+# openwrt-build
+openwrt create
+>>>>>>> origin/main
