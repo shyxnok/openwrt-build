@@ -1,12 +1,5 @@
 name: Build OpenWrt (Full Source Compilation)
 
-# =============================================================================
-# Full source compilation workflow — clones OpenWrt source, applies your custom
-# configs/feeds/scripts, and compiles everything from scratch.
-# Best for: deep customization (kernel config, build options, custom patches).
-# Duration: 2–3 hours (first run), ~1 hour with cache hits.
-# =============================================================================
-
 on:
   workflow_dispatch:
     inputs:
@@ -21,23 +14,22 @@ on:
         type: string
         default: 'main'
       config_file:
-        description: '.config 文件路径（相对于仓库根目录，放在 configs/ 下可选）'
+        description: '.config 文件路径（相对于仓库根目录）'
         required: false
         type: string
         default: 'configs/x86-64.config'
       extra_packages:
-        description: '额外安装的包（空格分隔，如: luci-app-openvpn nano htop）'
+        description: '额外安装的包（空格分隔）'
         required: false
         type: string
         default: ''
       upload_release:
-        description: '是否上传到 GitHub Release'
+        description: '上传到 GitHub Release'
         required: false
         type: boolean
         default: false
 
   schedule:
-    # 每周五 UTC 20:00 自动编译（北京时间周六凌晨 4:00）
     - cron: '0 20 * * 5'
 
   push:
@@ -50,6 +42,8 @@ on:
 
 env:
   TZ: Asia/Shanghai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEBIAN_FRONTEND: noninteractive
 
 permissions:
   contents: write
@@ -59,60 +53,61 @@ jobs:
   build:
     name: Build ${{ github.event.inputs.config_file || 'configs/x86-64.config' }}
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
 
     steps:
-      # -----------------------------------------------------------------------
-      # Step 0 — 准备：检出仓库 + 释放磁盘 + 安装编译依赖
-      # -----------------------------------------------------------------------
-
       - name: Checkout Custom Repository
         uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------
+      # Step 0 — 安装编译依赖（Ubuntu 24.04 适配版）
+      # -------------------------------------------------------------------
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler \
+            fastjar flex gawk gcc-multilib g++-multilib gettext genisoimage \
+            git gperf haveged help2man intltool libc6-dev-i386 libelf-dev \
+            libfuse-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libgnutls28-dev libncurses-dev libpython3-dev libreadline-dev \
+            libssl-dev libtool libyaml-dev lld llvm lrzsz msmtp \
+            nano ninja-build p7zip p7zip-full patch pkgconf python3 \
+            python3-ply python3-pyelftools python3-setuptools python3-venv \
+            qemu-utils quilt re2c rsync scons squashfs-tools subversion swig \
+            texinfo unzip upx-ucl vim wget xmlto xxd zlib1g-dev zstd
+          # Optional: try to install packages that may not exist on 24.04
+          sudo apt-get install -y ecj libecj-java uglifyjs 2>/dev/null || true
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          sudo timedatectl set-timezone "$TZ"
+          echo ">> Dependencies OK. gcc: $(gcc --version | head -1)"
+
+      # -------------------------------------------------------------------
+      # Step 1 — 释放磁盘空间（在依赖之后执行，避免误删工具）
+      # -------------------------------------------------------------------
 
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true
+          tool-cache: false
           android: true
           dotnet: true
           haskell: true
           large-packages: true
           swap-storage: true
 
-      - name: Install Build Dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
-            build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler \
-            ecj fastjar flex gawk gcc-multilib g++-multilib gettext genisoimage \
-            git gnutls-dev gperf haveged help2man intltool libc6-dev-i386 libelf-dev \
-            libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
-            libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
-            libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz msmtp \
-            nano ninja-build p7zip p7zip-full patch pkgconf python3 \
-            python3-distutils python3-ply python3-pyelftools python3-setuptools \
-            qemu-utils quilt re2c rsync scons squashfs-tools subversion swig \
-            texinfo uglifyjs unzip upx-ucl vim wget xmlto xxd zlib1g-dev zstd
-          sudo apt-get autoremove -y --purge
-          sudo apt-get clean
-          sudo timedatectl set-timezone "$TZ"
-
-      # -----------------------------------------------------------------------
-      # Step 1 — 缓存：恢复 ccache 加速二次编译
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 2 — 缓存恢复
+      # -------------------------------------------------------------------
 
       - name: Restore ccache Cache
         id: restore-cache
         uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.event.inputs.repo_branch || 'main' }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-${{ runner.os }}-${{ github.event.inputs.repo_branch || 'main' }}-
+          key: ccache-${{ runner.os }}-${{ github.event.inputs.repo_branch || 'main' }}
 
       - name: Configure ccache
         run: |
@@ -120,20 +115,21 @@ jobs:
           ccache --set-config=compression=true
           ccache -z
 
-      # -----------------------------------------------------------------------
-      # Step 2 — 克隆 OpenWrt 源码
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 3 — 克隆 OpenWrt 源码
+      # -------------------------------------------------------------------
 
       - name: Clone OpenWrt Source
         run: |
           REPO_URL="${{ github.event.inputs.repo_url || 'https://github.com/openwrt/openwrt' }}"
           REPO_BRANCH="${{ github.event.inputs.repo_branch || 'main' }}"
-          echo "Cloning $REPO_URL ($REPO_BRANCH) ..."
+          echo ">> Cloning $REPO_URL ($REPO_BRANCH) ..."
           git clone "$REPO_URL" -b "$REPO_BRANCH" --depth=1 openwrt
+          echo ">> Clone complete. Source size: $(du -sh openwrt/ | cut -f1)"
 
-      # -----------------------------------------------------------------------
-      # Step 3 — 应用自定义配置
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 4 — 应用自定义配置
+      # -------------------------------------------------------------------
 
       - name: Apply Custom Feeds Configuration
         run: |
@@ -141,7 +137,7 @@ jobs:
             echo ">> Using custom feeds.conf"
             cp feeds.conf openwrt/feeds.conf.default
           else
-            echo ">> No custom feeds.conf found, using OpenWrt defaults"
+            echo ">> No custom feeds.conf found, using defaults"
           fi
 
       - name: Run DIY Part 1 (Pre-Feed Modify Source)
@@ -150,7 +146,7 @@ jobs:
             echo ">> Running diy-part1.sh ..."
             bash scripts/diy-part1.sh
           else
-            echo ">> diy-part1.sh not found or not executable, skipping"
+            echo ">> diy-part1.sh not found, skipping"
           fi
 
       - name: Copy Custom Files to OpenWrt
@@ -162,9 +158,9 @@ jobs:
             echo ">> No custom files to copy"
           fi
 
-      # -----------------------------------------------------------------------
-      # Step 4 — 更新 & 安装 Feeds
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 5 — 更新 & 安装 Feeds
+      # -------------------------------------------------------------------
 
       - name: Update Feeds
         working-directory: openwrt
@@ -174,9 +170,9 @@ jobs:
         working-directory: openwrt
         run: ./scripts/feeds install -a
 
-      # -----------------------------------------------------------------------
-      # Step 5 — 应用 .config 并运行 diy-part2
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 6 — 应用 .config
+      # -------------------------------------------------------------------
 
       - name: Apply Custom .config
         run: |
@@ -185,9 +181,9 @@ jobs:
             echo ">> Using config: $CONFIG_FILE"
             cp "$CONFIG_FILE" openwrt/.config
           else
-            echo "::warning::Config file '$CONFIG_FILE' not found! Check your inputs."
-            echo ">> Available config files in configs/:"
-            ls -la configs/ || echo "   (configs/ directory is empty)"
+            echo "::error::Config file '$CONFIG_FILE' not found!"
+            ls -la configs/ || echo "configs/ is empty"
+            exit 1
           fi
 
       - name: Run DIY Part 2 (Pre-Compile Config Modify)
@@ -196,7 +192,7 @@ jobs:
             echo ">> Running diy-part2.sh ..."
             bash scripts/diy-part2.sh
           else
-            echo ">> diy-part2.sh not found or not executable, skipping"
+            echo ">> diy-part2.sh not found, skipping"
           fi
 
       - name: Apply Extra Packages
@@ -208,111 +204,114 @@ jobs:
             for pkg in $EXTRA_PKGS; do
               echo "CONFIG_PACKAGE_${pkg/-/_}=y" | tr 'a-z' 'A-Z' >> .config
             done
+            cd ..
           fi
 
-      # -----------------------------------------------------------------------
-      # Step 6 — 准备编译
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 7 — 准备编译
+      # -------------------------------------------------------------------
 
       - name: Make defconfig
-        working-directory: openwrt
-        run: make defconfig
-
-      - name: Show Target Summary
+        id: defconfig
         working-directory: openwrt
         run: |
-          echo "============= Build Target ============="
-          grep -E '^CONFIG_TARGET_[A-Z]+=y' .config || echo "(target not set)"
-          grep -E '^CONFIG_TARGET_[A-Z]+_' .config || true
-          echo "========================================="
+          echo ">> Running make defconfig..."
+          make defconfig V=s
+          echo ">> Selected target:"
+          grep -E '^CONFIG_TARGET_[a-z]' .config | grep -v '^#\|is not set' | head -20 || true
 
       - name: Restore Download Cache
         id: restore-dl-cache
         uses: actions/cache/restore@v4
         with:
           path: openwrt/dl
-          key: dl-${{ runner.os }}-${{ hashFiles('feeds.conf') }}-${{ hashFiles(format('{0}', github.event.inputs.config_file || 'configs/x86-64.config')) }}
+          key: dl-${{ runner.os }}-${{ hashFiles('feeds.conf') }}
 
       - name: Download All Source Packages
         working-directory: openwrt
         run: |
+          echo ">> Downloading source packages..."
           make download -j$(nproc) V=s
-          # Remove corrupted downloads (files smaller than 1KB)
-          find dl -size -1024c -exec rm -f {} \;
+          echo ">> Cleaning corrupted downloads..."
+          find dl -size -1024c -exec rm -v {} \;
+          echo ">> dl/ size: $(du -sh dl/ | cut -f1)"
 
-      # -----------------------------------------------------------------------
-      # Step 7 — 编译
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 8 — 编译
+      # -------------------------------------------------------------------
 
       - name: Compile Firmware
         id: compile
         working-directory: openwrt
-        env:
-          PATH: /usr/lib/ccache:${{ env.PATH }}
         run: |
-          echo ">> Starting compilation with $(nproc) threads"
-          make -j$(nproc) V=s 2>&1 | tee build.log || make -j1 V=s 2>&1 | tee -a build.log
-          echo "status=success" >> $GITHUB_OUTPUT
-          # Extract device name from .config
-          DEVICE_NAME=$(grep -E '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' || echo "unknown")
+          echo ">> Starting compilation with $(nproc) threads..."
+          echo ">> Disk space: $(df -h . | tail -1 | awk '{print $4}') available"
+          make -j$(nproc) V=s 2>&1 | tee build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "::warning::First attempt failed (exit $BUILD_EXIT). Retrying with -j1 V=s..."
+            make -j1 V=s 2>&1 | tee -a build.log
+            BUILD_EXIT=${PIPESTATUS[0]}
+            if [ $BUILD_EXIT -ne 0 ]; then
+              echo "::error::Build failed with exit code $BUILD_EXIT"
+              echo ">> Last 100 lines of build.log:"
+              tail -100 build.log
+              exit $BUILD_EXIT
+            fi
+          fi
+          echo ">> Build succeeded!"
+          DEVICE_NAME=$(grep -E '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' || echo "generic")
           echo "DEVICE_NAME=$DEVICE_NAME" >> $GITHUB_ENV
-          echo ">> Build complete for device: $DEVICE_NAME"
+          echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: ccache Statistics
+      - name: Show Build Summary
         if: always()
         run: |
+          echo "======================="
+          echo "ccache stats:"
           ccache -s
           echo "======================="
-          echo "Disk usage summary:"
-          echo "======================="
+          echo "Disk usage:"
           df -h
-          echo "---"
-          du -sh openwrt/bin 2>/dev/null || echo "bin: not found"
-          du -sh openwrt/dl 2>/dev/null || echo "dl: not found"
+          du -sh openwrt/bin 2>/dev/null || echo "bin: empty"
+          du -sh openwrt/dl 2>/dev/null || echo "dl: empty"
+          du -sh openwrt/build_dir 2>/dev/null || echo "build_dir: empty"
 
-      # -----------------------------------------------------------------------
-      # Step 8 — 保存缓存（仅限默认分支或手动触发）
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 9 — 保存缓存
+      # -------------------------------------------------------------------
 
       - name: Save ccache Cache
-        if: steps.restore-cache.outputs.cache-hit != 'true' && steps.compile.outputs.status == 'success'
+        if: steps.compile.outputs.status == 'success'
         uses: actions/cache/save@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.event.inputs.repo_branch || 'main' }}-${{ github.run_id }}
+          key: ccache-${{ runner.os }}-${{ github.event.inputs.repo_branch || 'main' }}
 
       - name: Save Download Cache
-        if: steps.restore-dl-cache.outputs.cache-hit != 'true' && steps.compile.outputs.status == 'success'
+        if: steps.compile.outputs.status == 'success'
         uses: actions/cache/save@v4
         with:
           path: openwrt/dl
-          key: dl-${{ runner.os }}-${{ hashFiles('feeds.conf') }}-${{ hashFiles(format('{0}', github.event.inputs.config_file || 'configs/x86-64.config')) }}
+          key: dl-${{ runner.os }}-${{ hashFiles('feeds.conf') }}
 
-      # -----------------------------------------------------------------------
-      # Step 9 — 上传产物
-      # -----------------------------------------------------------------------
-
-      - name: Organize Firmware Files
-        id: organize
-        if: steps.compile.outputs.status == 'success'
-        run: |
-          mkdir -p artifact
-          # Remove packages subdirectory (intermediate .ipk files, not needed)
-          rm -rf $(find openwrt/bin/targets -type d -name "packages" 2>/dev/null)
-          # Copy firmware files
-          cp -r openwrt/bin/targets artifact/
-          echo ">> Firmware files:"
-          find artifact -type f -name "*.img.gz" -o -name "*.vmdk" -o -name "*.vdi" \
-            -o -name "*.iso" -o -name "*.tar.gz" -o -name "*-squashfs-*" \
-            -o -name "*.itb" -o -name "*.bin" \
-            | head -30
+      # -------------------------------------------------------------------
+      # Step 10 — 上传产物
+      # -------------------------------------------------------------------
 
       - name: Upload Firmware Artifact
         if: steps.compile.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt_Firmware_${{ env.DEVICE_NAME }}_${{ github.run_number }}
-          path: artifact/targets/
+          path: |
+            openwrt/bin/targets/**/*.img.gz
+            openwrt/bin/targets/**/*.vmdk
+            openwrt/bin/targets/**/*.vdi
+            openwrt/bin/targets/**/*.iso
+            openwrt/bin/targets/**/*-squashfs-*
+            openwrt/bin/targets/**/*.itb
+            openwrt/bin/targets/**/*.bin
           retention-days: 90
           compression-level: 6
 
@@ -324,17 +323,15 @@ jobs:
           path: openwrt/build.log
           retention-days: 30
 
-      # -----------------------------------------------------------------------
-      # Step 10 — 发布到 GitHub Release（可选）
-      # -----------------------------------------------------------------------
+      # -------------------------------------------------------------------
+      # Step 11 — 发布到 Release（可选）
+      # -------------------------------------------------------------------
 
       - name: Generate Release Tag
         id: release_tag
         if: steps.compile.outputs.status == 'success' && github.event.inputs.upload_release == 'true'
         run: |
-          TAG="$(date +'%Y.%m.%d')-build${{ github.run_number }}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo ">> Release tag: $TAG"
+          echo "tag=$(date +'%Y.%m.%d')-build${{ github.run_number }}" >> $GITHUB_OUTPUT
 
       - name: Upload Firmware to Release
         uses: softprops/action-gh-release@v2
@@ -344,26 +341,17 @@ jobs:
           name: OpenWrt Firmware ${{ steps.release_tag.outputs.tag }}
           body: |
             ## OpenWrt 固件自动编译
-
             - **源码**: ${{ github.event.inputs.repo_url || 'https://github.com/openwrt/openwrt' }}
             - **分支**: ${{ github.event.inputs.repo_branch || 'main' }}
             - **配置文件**: ${{ github.event.inputs.config_file || 'configs/x86-64.config' }}
-            - **编译时间**: ${{ github.event.repository.updated_at }}
             - **设备**: ${{ env.DEVICE_NAME }}
-
-            ### 使用说明
-            刷写固件前请先备份当前配置。默认路由器地址: `192.168.1.1`
           files: |
-            artifact/targets/**/*.img.gz
-            artifact/targets/**/*.vmdk
-            artifact/targets/**/*.iso
-            artifact/targets/**/*-squashfs-*
+            openwrt/bin/targets/**/*.img.gz
+            openwrt/bin/targets/**/*.vmdk
+            openwrt/bin/targets/**/*.iso
+            openwrt/bin/targets/**/*-squashfs-*
           draft: false
           prerelease: false
-
-      # -----------------------------------------------------------------------
-      # Step 11 — 清理旧工件
-      # -----------------------------------------------------------------------
 
       - name: Delete Old Workflow Runs
         uses: Mattraks/delete-workflow-runs@main
