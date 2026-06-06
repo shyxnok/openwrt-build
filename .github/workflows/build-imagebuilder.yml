@@ -94,7 +94,7 @@ jobs:
           fi
 
       - name: Build Firmware with ImageBuilder
-        uses: fantastic-packages/gh-action-imagebuilder@main
+        uses: fantastic-packages/gh-action-imagebuilder@master
         env:
           TARGET: ${{ inputs.target }}
           VERSION: ${{ inputs.openwrt_version }}
