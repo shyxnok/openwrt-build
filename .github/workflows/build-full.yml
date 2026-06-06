@@ -133,14 +133,20 @@ jobs:
 
       - name: Apply Custom Feeds Configuration
         run: |
+          # Extract only valid feed lines (no comments, no empty lines)
           if [ -f feeds.conf ]; then
-            echo ">> Appending custom feeds to defaults..."
-            echo "" >> openwrt/feeds.conf.default
-            cat feeds.conf >> openwrt/feeds.conf.default
-            echo ">> Final feeds config:"
-            grep -v '^#' openwrt/feeds.conf.default | grep -v '^$' || true
+            CUSTOM_FEEDS=$(grep -E '^src-' feeds.conf || true)
+            if [ -n "$CUSTOM_FEEDS" ]; then
+              echo ">> Appending custom feeds to defaults..."
+              echo "" >> openwrt/feeds.conf.default
+              echo "$CUSTOM_FEEDS" >> openwrt/feeds.conf.default
+              echo ">> Added custom feeds:"
+              echo "$CUSTOM_FEEDS"
+            else
+              echo ">> feeds.conf has no active feeds (all commented out), using defaults only"
+            fi
           else
-            echo ">> No custom feeds.conf found, using defaults only"
+            echo ">> No feeds.conf found, using defaults only"
           fi
 
       - name: Run DIY Part 1 (Pre-Feed Modify Source)
