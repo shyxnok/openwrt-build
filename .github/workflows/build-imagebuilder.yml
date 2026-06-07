@@ -1,10 +1,9 @@
 name: Build OpenWrt (ImageBuilder — Fast)
 
 # =============================================================================
-# Fast ImageBuilder workflow — downloads pre-built OpenWrt ImageBuilder for your
-# target and assembles a custom firmware image with your chosen packages.
-# Best for: quick iteration (adding/removing packages), testing configs.
-# Duration: 15–30 minutes.
+# Official ImageBuilder workflow — downloads the ImageBuilder archive from
+# downloads.openwrt.org and assembles firmware with your chosen packages.
+# No third-party action dependency. Duration: 10–20 minutes.
 # =============================================================================
 
 on:
@@ -44,30 +43,20 @@ on:
           - 'sunxi/cortexa53'
         default: 'x86/64'
       profile:
-        description: '目标设备 Profile（留空使用 target 默认）如: generic, netgear_wndr4300'
+        description: '目标设备 Profile（x86 通常用 generic）'
         required: false
         type: string
-        default: ''
+        default: 'generic'
       packages:
-        description: '额外安装的软件包（空格分隔）如: luci luci-i18n-base-zh-cn nano htop curl'
+        description: '额外安装的软件包（空格分隔）'
         required: false
         type: string
         default: 'luci luci-i18n-base-zh-cn nano htop curl'
-      disable_services:
-        description: '禁用的启动服务（空格分隔）如: dnsmasq firewall'
-        required: false
-        type: string
-        default: ''
       rootfs_size:
-        description: 'RootFS 分区大小 (MB)'
+        description: 'RootFS 分区大小 (MB)，留空使用默认'
         required: false
         type: string
-        default: '512'
-      custom_files:
-        description: '包含自定义文件的目录路径（留空使用仓库中的 files/ 目录）'
-        required: false
-        type: string
-        default: 'files'
+        default: '1024'
 
 permissions:
   contents: write
@@ -81,63 +70,63 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set Build Variables
-        id: vars
+      - name: Download and Extract ImageBuilder
         run: |
+          VERSION="${{ inputs.openwrt_version }}"
           TARGET="${{ inputs.target }}"
-          echo "TARGET_SAFE=${TARGET//\//-}" >> $GITHUB_ENV
-          BRANCH="${{ inputs.openwrt_version }}"
-          if [ "$BRANCH" = "snapshots" ]; then
-            echo "BRANCH=snapshots" >> $GITHUB_ENV
+          TARGET_SAFE="${TARGET//\//-}"
+
+          if [ "$VERSION" = "snapshots" ]; then
+            BASE="https://downloads.openwrt.org/snapshots/targets/${TARGET}"
+            NAME="openwrt-imagebuilder-${TARGET_SAFE}.Linux-x86_64"
           else
-            echo "BRANCH=$(echo "$BRANCH" | grep -oE '^[0-9]+\.[0-9]+')" >> $GITHUB_ENV
+            BASE="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}"
+            NAME="openwrt-imagebuilder-${VERSION}-${TARGET_SAFE}.Linux-x86_64"
           fi
 
-      - name: Build Firmware with ImageBuilder
-        uses: fantastic-packages/gh-action-imagebuilder@master
-        env:
-          TARGET: ${{ inputs.target }}
-          VERSION: ${{ inputs.openwrt_version }}
-          PROFILE: ${{ inputs.profile }}
-          ARTIFACTS_DIR: ${{ github.workspace }}/artifacts
-          PACKAGES: ${{ inputs.packages }}
-          DISABLED_SERVICES: ${{ inputs.disable_services }}
-          ROOTFS_SIZE: ${{ inputs.rootfs_size }}
+          # Try .zst first (newer), fall back to .xz
+          echo ">> Downloading $BASE/$NAME.tar.zst"
+          if curl -fL "$BASE/$NAME.tar.zst" -o ib.tar.zst 2>/dev/null; then
+            tar --zstd -xf ib.tar.zst 2>/dev/null || tar -xf ib.tar.zst
+          else
+            echo ">> .zst not available, trying .xz..."
+            curl -fL "$BASE/$NAME.tar.xz" -o ib.tar.xz
+            tar -xf ib.tar.xz
+          fi
 
-      - name: Verify Built Images
+          IB_DIR=$(ls -d openwrt-imagebuilder-* 2>/dev/null | head -1)
+          [ -z "$IB_DIR" ] && { echo "::error::ImageBuilder extraction failed"; ls -la; exit 1; }
+          echo "IB_DIR=$IB_DIR" >> $GITHUB_ENV
+          echo ">> ImageBuilder: $IB_DIR"
+
+      - name: Prepare Custom Files
         run: |
-          echo ">> Built firmware images:"
-          find artifacts/bin/targets/ -type f \( \
-            -name "*.img.gz" -o -name "*.vmdk" -o -name "*.vdi" \
-            -o -name "*.iso" -o -name "*.tar.gz" -o -name "*-squashfs-*" \
-            -o -name "*.itb" -o -name "*.bin" \) \
-            | head -30
-          echo "---"
-          echo ">> Image sizes:"
-          find artifacts/bin/targets/ -type f \( \
-            -name "*.img.gz" -o -name "*.vmdk" -o -name "*.vdi" \
-            -o -name "*.iso" -o -name "*.tar.gz" \) \
-            -exec ls -lh {} \;
+          if [ -d files ] && [ "$(ls -A files 2>/dev/null)" ]; then
+            echo "FILES_PATH=${{ github.workspace }}/files" >> $GITHUB_ENV
+            echo ">> Custom files: $(find files -type f | wc -l) files"
+          else
+            mkdir -p /tmp/empty-files
+            echo "FILES_PATH=/tmp/empty-files" >> $GITHUB_ENV
+            echo ">> No custom files"
+          fi
+
+      - name: Assemble Firmware Image
+        working-directory: ${{ env.IB_DIR }}
+        run: |
+          CMD="make image"
+          [ -n "${{ inputs.profile }}" ]    && CMD="$CMD PROFILE=\"${{ inputs.profile }}\""
+          [ -n "${{ inputs.packages }}" ]   && CMD="$CMD PACKAGES=\"${{ inputs.packages }}\""
+          [ -n "${{ inputs.rootfs_size }}" ] && CMD="$CMD ROOTFS_PARTSIZE=\"${{ inputs.rootfs_size }}\""
+          [ -n "$FILES_PATH" ] && [ -d "$FILES_PATH" ] && CMD="$CMD FILES=\"$FILES_PATH\""
+
+          echo ">> $CMD"
+          eval "$CMD"
+          echo ">> Output:"
+          find bin/ -type f \( -name "*.img.gz" -o -name "*.vmdk" -o -name "*.vdi" -o -name "*.iso" -o -name "*-squashfs-*" \) -exec ls -lh {} \;
 
       - name: Upload Firmware Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_${{ inputs.openwrt_version }}_${{ env.TARGET_SAFE }}_${{ github.run_number }}
-          path: artifacts/bin/targets/${{ inputs.target }}/
+          name: OpenWrt_${{ inputs.openwrt_version }}_${{ inputs.target }}_${{ github.run_number }}
+          path: ${{ env.IB_DIR }}/bin/targets/
           retention-days: 90
-
-      - name: Upload to Release
-        if: inputs.openwrt_version == 'snapshots'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: snapshot-${{ env.TARGET_SAFE }}-${{ github.run_number }}
-          name: 'Snapshot: ${{ inputs.target }} (Build #${{ github.run_number }})'
-          body: |
-            ## Snapshot 固件
-
-            - **目标**: ${{ inputs.target }}
-            - **额外包**: ${{ inputs.packages }}
-          files: |
-            artifacts/bin/targets/${{ inputs.target }}/*
-          draft: false
-          prerelease: true
