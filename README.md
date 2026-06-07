@@ -191,6 +191,4 @@ echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
 
 MIT License
 =======
-# openwrt-build
-openwrt create
->>>>>>> origin/main
+
