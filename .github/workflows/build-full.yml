@@ -367,3 +367,33 @@ jobs:
         with:
           retain_days: 30
           keep_minimum_runs: 5
+            # 编译成功通知
+      - name: Notify Success
+        if: success()
+        uses: shyxnok/send_email@v1.0.0
+        with:
+          channel: telegram
+          body: |
+            ✅ *Build Passed*
+            Repo: ${{ github.event.inputs.repo_url || github.repository }}
+            Branch: ${{ github.event.inputs.branch || github.ref_name }}
+          telegram_chat_id: "${{ secrets.TELEGRAM_CHAT_ID }}"
+          telegram_parse_mode: MarkdownV2
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+      # 编译失败通知
+      - name: Notify Failure
+        if: failure()
+        uses: shyxnok/send_email@v1.0.0
+        with:
+          channel: telegram
+          body: |
+            ❌ *Build Failed*
+            Repo: ${{ github.event.inputs.repo_url || github.repository }}
+            Branch: ${{ github.event.inputs.branch || github.ref_name }}
+            [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          telegram_chat_id: "${{ secrets.TELEGRAM_CHAT_ID }}"
+          telegram_parse_mode: MarkdownV2
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
